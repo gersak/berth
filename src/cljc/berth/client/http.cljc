@@ -1,9 +1,8 @@
-(ns reacher.util.http
+(ns berth.client.http
   #?(:cljs (:require-macros [cljs.core.async.macros :as async]))
   #?(:clj
      (:require
        [clojure.core.async :as async]
-       [cheshire.core :as json]
        [clj-http.client :as client])
      :cljs 
      (:require 
@@ -36,16 +35,6 @@
          (update :headers js->clj)
          (update :request-method #(when % ((comp keyword clojure.string/lower-case) %))))))))
 
-(defn- read-body [content-type body]
-  (when body
-    (condp re-find (str content-type)
-      #"application/json" #?(:clj (json/parse-string
-                                    (if (string? body)
-                                      body
-                                      (slurp body)) 
-                                    true)
-                             :cljs (js->clj (js/JSON.parse body) :keywordize-keys true))
-      body)))
 
 #?(:clj
    (defn request [{{accept "Accept"} :headers 
@@ -54,9 +43,10 @@
      (let [result (async/promise-chan)] 
        (try
          (let [r (client/request params)]
-           (async/put! result (update :body r (read-body accept))))
+           (async/put! result r))
          (catch Throwable e
-           (async/put! result e))) 
+           (async/put! result e))
+         (finally (async/close! result))) 
        result))
    :cljs
    (defn request [params]
@@ -114,14 +104,14 @@
                                                 :port (or (when port (js/parseInt port)) 80)
                                                 :timeout (or *timeout* timeout)
                                                 :body body
-                                                :message (.-message e)}))))
+                                                :message (.-message e)}))
+                          (async/close! result)))
        (async/go-loop [chunky (async/<! buffer)
                        body nil]
-         (if-not chunky (async/put! result 
-                                    (let [m (async/<! meta-response)]
-                                      (assoc m :body (read-body 
-                                                       (get-in m [:headers "content-type"])
-                                                       body))))
+         (if-not chunky 
+           (do
+             (async/put! result (async/<! meta-response))
+             (async/close! result))
            (recur (async/<! buffer) (str body chunky))))
        (.end req body)
        result)))
@@ -154,41 +144,50 @@
 
 (def ^:dynamic *call-transform* nil)
 
+
+(defprotocol DockerConnectionProtocol
+  (host [this] "Returns connection host")
+  (port [this] "Returns conneciton port")
+  (alive? [this] "Return true if deamon is alive")
+  (schema [this] "Returns connection schema (http,https,unix)")
+  (version [this] "Returns connection version!"))
+
 (defn call
-  ([driver method path-args]
-   (call driver method path-args nil))
-  ([driver method path-args & {:keys [query body headers]
-                               :or {headers {"Accept" "application/json"
-                                             "Content-Type" "application/json"}}}]
-   (let [host (drivers/get-host driver)
-         port (drivers/get-port driver)
-         root-path (drivers/get-root-path driver)
+  ([connection method path-args 
+    & {:keys [query body headers]
+       :or {headers {"Accept" "application/json"
+                     "Content-Type" "application/json"}}}]
+   (let [host (host connection)
+         port (port connection)
+         schema (schema connection)
+         version (version connection)
          path (->URL path-args)
-         url (if root-path
+         url (if version
                (#?(:clj format
-                   :cljs goog.string.format) "http://%s:%s/%s/%s" host port root-path path)
+                   :cljs goog.string.format) "%s://%s:%s/%s/%s" schema host port version path)
                (#?(:clj format
-                   :cljs goog.string.format) "http://%s:%s/%s" host port path))
-         ;; This is here only because of geckodriver pre 18.0.
+                   :cljs goog.string.format) "%s://%s:%s/%s" schema host port path))
+         ;; This is here only because of geckoconnection pre 18.0.
          result (async/promise-chan)
-         params {:url url
-                 :method method
-                 :headers headers 
-                 :timeout (* 1000 *timeout*)
-                 :body body}
+         params (cond->
+                  {:url url
+                   :method method}
+                  (some? query) (assoc :query-params query)
+                  (some? body) (assoc :body body)
+                  (some? headers) (assoc :headers headers))
          transform *call-transform*]
-     (go
-       (let [{{:keys [status] :as body} :body :as response} (async/<! (http/request params))]
+     (async/go
+       (let [{body :body :as response} (async/<! (request params))]
          (if (instance? #?(:clj Throwable :cljs js/Error) response) 
            (do
              (async/put! result response)
              (async/close! result))
            (try
-             (async/put! result (if-not body
-                                  {}
-                                  (if transform
-                                    (transform body)
-                                    body)))
+             (if-not body nil
+               (async/put! result 
+                           (if transform
+                             (transform body)
+                             body)))
              (catch Throwable e
                (async/put! result e))
              (finally (async/close! result))))))
