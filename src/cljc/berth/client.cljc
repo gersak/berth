@@ -1,28 +1,21 @@
 (ns berth.client
   (:require
-    #?@(:clj [[cheshire.core :as c]
+    #?@(:clj [[clojure.data.json :as json]
               [clojure.java.io :as io]])
     [clojure.core.async :as async]
     [berth.client.http :as http
      :refer [with-transform request call]]))
 
 
-(defn connect 
-  ([] (connect nil))
-  ([{:keys [host port schema version]
-     :or {host "localhost"
-          port 2375
-          schema "http"}}]
-   (reify
-     berth.client.http.DockerConnectionProtocol
-     (http/host [_] host)
-     (http/port [_] port)
-     (http/version [_] version)
-     (http/schema [_] schema))))
+(def connect http/connect)
 
 ;; IMAGES
 (def body->json
-  #?(:clj c/parse-string))
+  #?(:clj json/read-str))
+
+(defn ping 
+  [connection]
+  (call connection :get "_ping"))
 
 (defn list-images 
   ([connection] (list-images connection nil))
@@ -77,7 +70,7 @@
    (with-transform body->json
      (call connection :post "containers/create"
            :query {:name name}
-           :body #?(:clj (c/generate-string params))))))
+           :body #?(:clj (json/write-str params))))))
 
 (defn inspect-container
   ([connection id]
@@ -90,7 +83,7 @@
    (with-transform body->json
      (call connection :post ["containers" id "update"]
            :query {:name name}
-           :body #?(:clj (c/generate-string params))))))
+           :body #?(:clj (json/write-str params))))))
 
 (defn start-container 
   ([connection id] (start-container connection id nil))
@@ -169,15 +162,15 @@
   (async/<!! (remove-image connection "neyho/eywa:latest"))
   (async/<!! (image-history connection "neyho/eywa:latest"))
   (async/<!! (list-containers connection {:all true}))
-  (async/<!! 
+  (async/<!!
     (create-container 
       connection 
       "EYWA"
       {"Image" "neyho/eywa:latest"
        "ExposedPorts" {"8000/tcp" {}}
        "PortBindings" {"8000/tcp" [{"HostPort" "8000"}]}}))
-  (async/<!! (start-container connection (x "Id")))
   (async/<!! (inspect-container connection (x "Id")))
+  (async/<!! (start-container connection (x "Id")))
   (async/<!! (stop-container connection (x "Id")))
   (async/<!! (remove-container connection (x "Id")))
   (async/<!! (prune-containers connection)))

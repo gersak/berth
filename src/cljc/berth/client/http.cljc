@@ -152,30 +152,39 @@
   (schema [this] "Returns connection schema (http,https,unix)")
   (version [this] "Returns connection version!"))
 
+(defn- generate-params
+  [connection method path-args 
+   {:keys [query body headers]
+    :or {headers {"Accept" "application/json"
+                  "Content-Type" "application/json"}}
+    :as args}]
+  (let [host (host connection)
+        port (port connection)
+        schema (schema connection)
+        version (version connection)
+        path (->URL path-args)
+        url (if version
+              (#?(:clj format
+                  :cljs goog.string.format) "%s://%s:%s/%s/%s" schema host port version path)
+              (#?(:clj format
+                  :cljs goog.string.format) "%s://%s:%s/%s" schema host port path))]
+    (cond->
+      {:url url
+       :method method}
+      (some? query) (assoc :query-params query)
+      (some? body) (assoc :body body)
+      (some? headers) (assoc :headers headers))))
+
 (defn call
   ([connection method path-args 
     & {:keys [query body headers]
        :or {headers {"Accept" "application/json"
-                     "Content-Type" "application/json"}}}]
-   (let [host (host connection)
-         port (port connection)
-         schema (schema connection)
-         version (version connection)
-         path (->URL path-args)
-         url (if version
-               (#?(:clj format
-                   :cljs goog.string.format) "%s://%s:%s/%s/%s" schema host port version path)
-               (#?(:clj format
-                   :cljs goog.string.format) "%s://%s:%s/%s" schema host port path))
-         ;; This is here only because of geckoconnection pre 18.0.
+                     "Content-Type" "application/json"}}
+       :as args}]
+   (let [params (generate-params connection method path-args args)
          result (async/promise-chan)
-         params (cond->
-                  {:url url
-                   :method method}
-                  (some? query) (assoc :query-params query)
-                  (some? body) (assoc :body body)
-                  (some? headers) (assoc :headers headers))
          transform *call-transform*]
+     ; (async/put! result 1000)
      (async/go
        (let [{body :body :as response} (async/<! (request params))]
          (if (instance? #?(:clj Throwable :cljs js/Error) response) 
@@ -201,3 +210,22 @@
 (defmacro with-timeout [timeout & body]
   `(binding [*timeout* ~timeout]
      ~@body))
+
+(defn connect 
+  ([] (connect nil))
+  ([{:keys [host port schema version]
+     :or {host "localhost"
+          port 2375
+          schema "http"}}]
+   (reify
+     berth.client.http.DockerConnectionProtocol
+     (host [_] host)
+     (port [_] port)
+     (version [_] version)
+     (schema [_] schema))))
+
+(comment
+  (def tester (let [result (async/promise-chan)] (async/go (async/>! result 1000)) result))
+  (def connection (connect))
+  (generate-params connection :get "_ping" nil)
+  (async/<!! (call connection :get "_ping")))

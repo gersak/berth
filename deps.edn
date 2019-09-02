@@ -1,5 +1,5 @@
 {:deps
- {cheshire {:mvn/version "5.9.0"}
+ {org.clojure/data.json {:mvn/verison "0.2.6"}
   org.clojure/data.zip {:mvn/version "0.1.2"}
   org.clojure/core.async {:mvn/version "0.3.443"}
   me.raynes/fs {:mvn/version "1.4.6"}
